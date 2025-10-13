@@ -87,6 +87,8 @@ class MPVActivity : AppCompatActivity(), MPVLib.EventObserver, TouchGesturesObse
     // convenience alias
     private val player get() = binding.player
 
+    private var pendingUris: List<Uri>? = null
+
     private val seekBarChangeListener = object : SeekBar.OnSeekBarChangeListener {
         override fun onProgressChanged(seekBar: SeekBar, progress: Int, fromUser: Boolean) {
             if (!fromUser)
@@ -1002,15 +1004,49 @@ class MPVActivity : AppCompatActivity(), MPVLib.EventObserver, TouchGesturesObse
     // Intent/Uri parsing
 
     private fun parsePathFromIntent(intent: Intent): String? {
-        val filepath = when (intent.action) {
-            Intent.ACTION_VIEW -> intent.data?.let { resolveUri(it) }
-            Intent.ACTION_SEND -> intent.getStringExtra(Intent.EXTRA_TEXT)?.let {
-                val uri = Uri.parse(it.trim())
-                if (uri.isHierarchical && !uri.isRelative) resolveUri(uri) else null
+        return when (intent.action) {
+            Intent.ACTION_VIEW -> {
+                // Normal file open or URL view
+                intent.data?.let { resolveUri(it) }
             }
-            else -> intent.getStringExtra("filepath")
+
+            Intent.ACTION_SEND -> {
+                // Handle single shared file or text link
+                val streamUri = intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
+                when {
+                    // File shared (e.g. from Gallery)
+                    streamUri != null -> resolveUri(streamUri)
+
+                    // Text or URL shared
+                    intent.hasExtra(Intent.EXTRA_TEXT) -> {
+                        val text = intent.getStringExtra(Intent.EXTRA_TEXT)?.trim()
+                        val parsed = text?.let { Uri.parse(it) }
+                        if (parsed != null && parsed.isHierarchical && !parsed.isRelative)
+                            resolveUri(parsed)
+                        else null
+                    }
+
+                    else -> null
+                }
+            }
+
+            Intent.ACTION_SEND_MULTIPLE -> {
+                // Multiple shared files (store them for later)
+                val uris = intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM)
+                if (!uris.isNullOrEmpty()) {
+                    val firstUri = uris.first()
+                    // Store only the remaining ones for later appending
+                    pendingUris = if (uris.size > 1) uris.drop(1) else null
+                    // Return first one for immediate playback
+                    resolveUri(firstUri)
+                } else null
+            }
+
+            else -> {
+                // Fallback: custom intent
+                intent.getStringExtra("filepath")
+            }
         }
-        return filepath
     }
 
     private fun resolveUri(data: Uri): String? {
@@ -1906,6 +1942,16 @@ class MPVActivity : AppCompatActivity(), MPVLib.EventObserver, TouchGesturesObse
         if (eventId == MpvEvent.MPV_EVENT_START_FILE) {
             for (c in onloadCommands)
                 MPVLib.command(c)
+
+            // Append any pending shared files (ACTION_SEND_MULTIPLE)
+            pendingUris?.forEach { uri ->
+                resolveUri(uri)?.let { path ->
+                    Log.v(TAG, "Appending shared file: $path")
+                    MPVLib.command(arrayOf("loadfile", path, "append"))
+                }
+            }
+            pendingUris = null
+
             if (this.statsLuaMode > 0 && !playbackHasStarted) {
                 MPVLib.command(arrayOf("script-binding", "stats/display-page-${this.statsLuaMode}-toggle"))
             }
