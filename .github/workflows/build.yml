@@ -1,7 +1,7 @@
-name: Build mpv-android (arm64 signed release)
+name: Build mpv-android (official arm64 release)
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: # run manually from Actions tab
 
 jobs:
   build:
@@ -22,7 +22,9 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake meson ninja-build yasm nasm gettext python3 git unzip
+          sudo apt-get install -y \
+            git python3 unzip yasm nasm cmake meson ninja-build gettext \
+            pkg-config autoconf automake libtool texinfo
 
       - name: Set up Android NDK (r28c)
         uses: nttld/setup-ndk@v1
@@ -38,13 +40,13 @@ jobs:
           ./download.sh
           cd ..
 
-      - name: Build native libraries (arm64 only)
+      - name: Build native libraries (default official .so)
         run: |
           cd buildscripts
           ./buildall.sh --arch arm64
           cd ..
 
-      - name: Copy native libraries into jniLibs
+      - name: Copy .so files into jniLibs
         run: |
           mkdir -p app/src/main/jniLibs/arm64-v8a
           cp -v buildscripts/prefix/arm64/usr/local/lib/*.so app/src/main/jniLibs/arm64-v8a/ || true
@@ -95,7 +97,7 @@ jobs:
         run: |
           "${{ steps.apksigner.outputs.apksigner_path }}" verify --verbose --print-certs signed-release.apk
 
-      - name: Upload signed ARM64 release
+      - name: Upload signed release APK
         uses: actions/upload-artifact@v4
         with:
           name: mpv-android-arm64-release-signed-${{ github.run_number }}
