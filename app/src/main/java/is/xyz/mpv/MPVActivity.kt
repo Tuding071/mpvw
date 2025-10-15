@@ -1,7 +1,6 @@
 package is.xyz.mpv
 
 import android.os.Bundle
-import android.view.View
 import androidx.appcompat.app.AppCompatActivity
 import is.xyz.mpv.databinding.ActivityMpvBinding
 
@@ -20,8 +19,7 @@ class MPVActivity : AppCompatActivity() {
         mpv.initialize(getExternalFilesDir(null)?.path + "/mpv")
 
         // Load media from intent
-        val uri = intent.data
-        if (uri != null) {
+        intent.data?.let { uri ->
             mpv.play(uri.toString())
         }
     }
@@ -41,8 +39,8 @@ class MPVActivity : AppCompatActivity() {
         super.onDestroy()
     }
 
-    // Optional: Add methods for your custom configuration
+    // Optional: Add method for custom gesture configuration
     fun setCustomGestureConfig(config: Any) {
-        // Example: Pass settings to TouchGestures if needed
+        // Placeholder for passing settings to TouchGestures if needed
     }
 }
