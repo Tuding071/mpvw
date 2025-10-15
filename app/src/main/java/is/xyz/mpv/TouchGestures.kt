@@ -19,9 +19,6 @@ enum class PropertyChange {
     SeekFixed,
     PlayPause,
     Custom,
-
-    /* Custom area gesture */
-    CustomArea
 }
 
 internal interface TouchGesturesObserver {
@@ -36,35 +33,44 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
         ControlSeek,
         ControlVolume,
         ControlBright,
-        CustomArea
     }
 
     private var state = State.Up
+    // relevant movement direction for the current state (0=H, 1=V)
     private var stateDirection = 0
 
+    // timestamp of the last tap (ACTION_UP)
     private var lastTapTime = 0L
+    // when the current gesture began
     private var lastDownTime = 0L
 
+    // where user initially placed their finger (ACTION_DOWN)
     private var initialPos = PointF()
+    // last non-throttled processed position
     private var lastPos = PointF()
 
     private var width = 0f
     private var height = 0f
+    // minimum movement which triggers a Control state
     private var trigger = 0f
+    
+    // Custom flag: true if the touch started in the custom center area
+    private var isCustomCenterTouch = false 
 
+    // which property change should be invoked where
     private var gestureHoriz = State.Down
     private var gestureVertLeft = State.Down
     private var gestureVertRight = State.Down
-    private var tapGestureLeft: PropertyChange? = null
-    private var tapGestureCenter: PropertyChange? = null
-    private var tapGestureRight: PropertyChange? = null
+    private var tapGestureLeft : PropertyChange? = null
+    private var tapGestureCenter : PropertyChange? = null
+    private var tapGestureRight : PropertyChange? = null
 
     private inline fun checkFloat(vararg n: Float): Boolean {
         return !n.any { it.isInfinite() || it.isNaN() }
     }
-
     private inline fun assertFloat(vararg n: Float) {
-        if (!checkFloat(*n)) throw IllegalArgumentException()
+        if (!checkFloat(*n))
+            throw IllegalArgumentException()
     }
 
     fun setMetrics(width: Float, height: Float) {
@@ -76,36 +82,52 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
 
     companion object {
         private const val TAG = "mpv"
-        private const val TRIGGER_RATE = 30
-        private const val TAP_DURATION = 300L
-        private const val CONTROL_SEEK_MAX = 150f
-        private const val CONTROL_VOLUME_MAX = 1.5f
-        private const val CONTROL_BRIGHT_MAX = 1.5f
-        private const val DEADZONE = 5
 
-        // New custom gesture vertical boundaries
-        private const val CUSTOM_AREA_TOP = 0.05f   // 5%
-        private const val CUSTOM_AREA_BOTTOM = 0.75f // 75% of height (5% top + 70% area)
+        // ratio for trigger, 1/Xth of minimum dimension
+        // for tap gestures this is the distance that must *not* be moved for it to trigger
+        private const val TRIGGER_RATE = 30
+
+        // maximum duration between taps (ms) for a double tap to count
+        private const val TAP_DURATION = 300L
+
+        // full sweep from left side to right side is 2:30
+        private const val CONTROL_SEEK_MAX = 150f
+
+        // same as below, we rescale it inside MPVActivity
+        private const val CONTROL_VOLUME_MAX = 1.5f
+
+        // brightness is scaled 0..1; max's not 1f so that user does not have to start from the bottom
+        // if they want to go from none to full brightness
+        private const val CONTROL_BRIGHT_MAX = 1.5f
+
+        // do not trigger on X% of screen top/bottom
+        // this is so that user can open android status bar
+        private const val DEADZONE = 5
+        
+        // Custom area constants
+        private const val CUSTOM_CENTER_TOP_PERCENT = 5f
+        private const val CUSTOM_CENTER_BOTTOM_PERCENT = 75f // 100% - 25% free bottom = 75%
     }
 
     private fun processTap(p: PointF): Boolean {
         if (state == State.Up) {
             lastDownTime = SystemClock.uptimeMillis()
+            // 3 is another arbitrary value here that seems good enough
             if (PointF(lastPos.x - p.x, lastPos.y - p.y).length() > trigger * 3)
-                lastTapTime = 0
+                lastTapTime = 0 // last tap was too far away, invalidate
             return true
         }
-
+        // discard if any movement gesture took place
         if (state != State.Down)
             return false
 
         val now = SystemClock.uptimeMillis()
         if (now - lastDownTime >= TAP_DURATION) {
-            lastTapTime = 0
+            lastTapTime = 0 // finger was held too long, reset
             return false
         }
-
         if (now - lastTapTime < TAP_DURATION) {
+            // [ Left 28% ] [    Center    ] [ Right 28% ]
             if (p.x <= width * 0.28f)
                 tapGestureLeft?.let { sendPropertyChange(it, -1f); return true }
             else if (p.x >= width * 0.72f)
@@ -120,10 +142,13 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
     }
 
     private fun processMovement(p: PointF): Boolean {
+        // throttle events: only send updates when there's some movement compared to last update
+        // 3 here is arbitrary
         if (PointF(lastPos.x - p.x, lastPos.y - p.y).length() < trigger / 3)
             return false
         lastPos.set(p)
 
+        assertFloat(initialPos.x, initialPos.y)
         val dx = p.x - initialPos.x
         val dy = p.y - initialPos.y
         val dr = if (stateDirection == 0) (dx / width) else (-dy / height)
@@ -131,36 +156,25 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
         when (state) {
             State.Up -> {}
             State.Down -> {
-                // Detect custom central gesture area
-                val yRatio = initialPos.y / height
-                if (yRatio >= CUSTOM_AREA_TOP && yRatio <= CUSTOM_AREA_BOTTOM) {
-                    state = State.CustomArea
-                    sendPropertyChange(PropertyChange.Init, 0f)
-                } else if (abs(dx) > trigger) {
+                // we might get into one of Control states if user moves enough
+                if (abs(dx) > trigger) {
                     state = gestureHoriz
                     stateDirection = 0
                 } else if (abs(dy) > trigger) {
                     state = if (initialPos.x > width / 2) gestureVertRight else gestureVertLeft
                     stateDirection = 1
                 }
-
+                // send Init so that it has a chance to cache values before we start modifying them
                 if (state != State.Down)
                     sendPropertyChange(PropertyChange.Init, 0f)
             }
-
-            State.CustomArea ->
-                sendPropertyChange(PropertyChange.CustomArea, dr * 100f)
-
             State.ControlSeek ->
                 sendPropertyChange(PropertyChange.Seek, CONTROL_SEEK_MAX * dr)
-
             State.ControlVolume ->
                 sendPropertyChange(PropertyChange.Volume, CONTROL_VOLUME_MAX * dr)
-
             State.ControlBright ->
                 sendPropertyChange(PropertyChange.Bright, CONTROL_BRIGHT_MAX * dr)
         }
-
         return state != State.Up && state != State.Down
     }
 
@@ -173,7 +187,6 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
             val v = prefs.getString(key, "")
             if (v.isNullOrEmpty()) resources.getString(defaultRes) else v
         }
-
         val map = mapOf(
             "bright" to State.ControlBright,
             "seek" to State.ControlSeek,
@@ -202,32 +215,67 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
             Log.w(TAG, "TouchGestures: ignoring invalid point ${e.x} ${e.y}")
             return false
         }
-
         var gestureHandled = false
         val point = PointF(e.x, e.y)
-
         when (e.action) {
             MotionEvent.ACTION_UP -> {
-                gestureHandled = processMovement(point) or processTap(point)
+                // --- CUSTOM CENTER AREA LOGIC ---
+                if (isCustomCenterTouch) {
+                    // Only process as a tap if no movement gesture took place (State.Down)
+                    if (state == State.Down) {
+                        // Custom Center Tap: Play/Pause
+                        sendPropertyChange(PropertyChange.PlayPause, 0f)
+                        lastTapTime = SystemClock.uptimeMillis() 
+                        gestureHandled = true
+                    }
+                    isCustomCenterTouch = false
+                } else {
+                    // Original Logic for non-custom areas
+                    gestureHandled = processMovement(point) or processTap(point)
+                }
+                // --- END CUSTOM CENTER AREA LOGIC ---
+                
                 if (state != State.Down)
                     sendPropertyChange(PropertyChange.Finalize, 0f)
                 state = State.Up
             }
-
             MotionEvent.ACTION_DOWN -> {
-                // Ignore deadzones (status bar + nav bar)
-                if (e.y < height * DEADZONE / 100 || e.y > height * (100 - DEADZONE) / 100)
-                    return false
+                val customCenterTopY = height * CUSTOM_CENTER_TOP_PERCENT / 100f
+                val customCenterBottomY = height * CUSTOM_CENTER_BOTTOM_PERCENT / 100f
 
+                // deadzone on top/bottom
+                if (e.y < customCenterTopY || e.y > customCenterBottomY) {
+                    // Touch is in the 'free' areas (top 5% or bottom 25%).
+                    isCustomCenterTouch = false
+                    // The old DEADZONE logic is now ONLY for non-custom center areas.
+                    // If the touch is in the new free area, we return false to ignore it entirely.
+                    return false 
+                }
+                
+                // Touch is in the custom center 70% area.
+                isCustomCenterTouch = true
+                
                 initialPos.set(point)
-                processTap(point)
+                // We SKIP processTap(point) here and rely on the ACTION_UP custom logic
+                // to prevent existing double-tap logic from firing in our area.
                 lastPos.set(point)
                 state = State.Down
+                // always return true on ACTION_DOWN to continue receiving events
                 gestureHandled = true
             }
-
             MotionEvent.ACTION_MOVE -> {
-                gestureHandled = processMovement(point)
+                // --- CUSTOM CENTER AREA LOGIC ---
+                if (isCustomCenterTouch) {
+                    // Block original movement processing (processMovement) to prevent 
+                    // Seek/Volume/Bright gestures in the custom area.
+                    // Just update lastPos and return true to continue tracking the touch.
+                    lastPos.set(point)
+                    gestureHandled = true
+                } else {
+                    // Original logic for other areas
+                    gestureHandled = processMovement(point)
+                }
+                // --- END CUSTOM CENTER AREA LOGIC ---
             }
         }
         return gestureHandled
