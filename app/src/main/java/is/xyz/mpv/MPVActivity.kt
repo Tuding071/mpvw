@@ -72,6 +72,12 @@ class MPVActivity : AppCompatActivity(), MPVLib.EventObserver, TouchGesturesObse
     private var didResumeBackgroundPlayback = false
     private var userIsOperatingSeekbar = false
 
+    // Frame scrubbing state
+    private var isFrameScrubbing = false
+    private var wasPlayingBeforeScrub = false
+    private var audioVolumeBeforeScrub = 100
+    private var initialFramePos = 0.0
+
     private var toast: Toast? = null
 
     private var audioManager: AudioManager? = null
@@ -171,6 +177,7 @@ class MPVActivity : AppCompatActivity(), MPVLib.EventObserver, TouchGesturesObse
     private var shouldSavePosition = false
 
     private var autoRotationMode = ""
+    private var enableFrameScrubbing = true
 
     private var controlsAtBottom = true
     private var showMediaTitle = false
@@ -381,13 +388,11 @@ class MPVActivity : AppCompatActivity(), MPVLib.EventObserver, TouchGesturesObse
         isPlayingAudio = (haveAudio && MPVLib.getPropertyBoolean("mute") != true)
     }
 
-    /**
-     * @return null if unknown
-     */
-    private fun isPlayingAudioOnly(): Boolean? {
+    private fun isPlayingAudioOnly(): Boolean {
         if (!isPlayingAudio)
             return false
-        return MPVLib.getPropertyBoolean("current-tracks/video/image")
+        val image = MPVLib.getPropertyString("current-tracks/video/image")
+        return image.isNullOrEmpty() || image == "yes"
     }
 
     private fun shouldBackground(): Boolean {
@@ -395,7 +400,7 @@ class MPVActivity : AppCompatActivity(), MPVLib.EventObserver, TouchGesturesObse
             return false
         return when (backgroundPlayMode) {
             "always" -> true
-            "audio-only" -> isPlayingAudioOnly() ?: false
+            "audio-only" -> isPlayingAudioOnly()
             else -> false // "never"
         }
     }
@@ -464,6 +469,7 @@ class MPVActivity : AppCompatActivity(), MPVLib.EventObserver, TouchGesturesObse
         this.shouldSavePosition = prefs.getBoolean("save_position", false)
         if (this.autoRotationMode != "manual") // don't reset
             this.autoRotationMode = getString("auto_rotation", R.string.pref_auto_rotation_default)
+        this.enableFrameScrubbing = prefs.getBoolean("frame_scrubbing", true)
         this.controlsAtBottom = prefs.getBoolean("bottom_controls", true)
         this.showMediaTitle = prefs.getBoolean("display_media_title", false)
         this.useTimeRemaining = prefs.getBoolean("use_time_remaining", false)
@@ -627,7 +633,7 @@ class MPVActivity : AppCompatActivity(), MPVLib.EventObserver, TouchGesturesObse
     private fun pauseForDialog(): StateRestoreCallback {
         val useKeepOpen = when (noUIPauseMode) {
             "always" -> true
-            "audio-only" -> isPlayingAudioOnly() ?: false
+            "audio-only" -> isPlayingAudioOnly()
             else -> false // "never"
         }
         if (useKeepOpen) {
@@ -1537,7 +1543,7 @@ class MPVActivity : AppCompatActivity(), MPVLib.EventObserver, TouchGesturesObse
                 R.id.cycleDecoderBtn, R.id.cycleSpeedBtn)
 
         val shouldUseAudioUI = isPlayingAudioOnly()
-        if (shouldUseAudioUI == null || shouldUseAudioUI == useAudioUI)
+        if (shouldUseAudioUI == useAudioUI)
             return
         useAudioUI = shouldUseAudioUI
         Log.v(TAG, "Audio UI: $useAudioUI")
@@ -1936,11 +1942,71 @@ class MPVActivity : AppCompatActivity(), MPVLib.EventObserver, TouchGesturesObse
     override fun onPropertyChange(p: PropertyChange, diff: Float) {
         val gestureTextView = binding.gestureTextView
         when (p) {
+            /* Frame Scrubbing Gestures */
+            PropertyChange.FrameScrubStart -> {
+                if (isFrameScrubbing) return
+                
+                isFrameScrubbing = true
+                wasPlayingBeforeScrub = !(player.paused ?: true)
+                initialFramePos = player.timePos ?: 0.0
+                
+                // Pause playback
+                player.paused = true
+                
+                // Save current volume and mute audio
+                audioVolumeBeforeScrub = MPVLib.getPropertyInt("volume") ?: 100
+                MPVLib.setPropertyInt("volume", 0)
+                
+                gestureTextView.text = "Frame Scrubbing"
+                Log.d(TAG, "Frame scrubbing started, paused=$wasPlayingBeforeScrub, vol=$audioVolumeBeforeScrub")
+            }
+            
+            PropertyChange.FrameScrub -> {
+                if (!isFrameScrubbing) return
+                
+                val framesToStep = diff.toInt()
+                if (framesToStep == 0) return
+                
+                val command = if (framesToStep > 0) "frame-step" else "frame-back-step"
+                
+                // Step frames
+                repeat(kotlin.math.abs(framesToStep)) {
+                    MPVLib.command(arrayOf(command))
+                }
+                
+                // Update gesture text
+                val direction = if (framesToStep > 0) "→" else "←"
+                val frameCount = kotlin.math.abs(framesToStep)
+                gestureTextView.text = "Frame $direction $frameCount"
+                
+                Log.d(TAG, "Frame scrubbing: stepped $framesToStep frame(s)")
+            }
+            
+            PropertyChange.FrameScrubFinalize -> {
+                if (!isFrameScrubbing) return
+                
+                // Restore audio volume
+                MPVLib.setPropertyInt("volume", audioVolumeBeforeScrub)
+                
+                // Resume playback if it was playing before
+                if (wasPlayingBeforeScrub) {
+                    player.paused = false
+                }
+                
+                val finalPos = player.timePos ?: 0.0
+                val deltaPos = finalPos - initialFramePos
+                
+                isFrameScrubbing = false
+                gestureTextView.text = "" // Clear the text
+                
+                Log.d(TAG, "Frame scrubbing ended, resumed=$wasPlayingBeforeScrub, delta=${deltaPos}s")
+            }
+
             /* Drag gestures */
             PropertyChange.Init -> {
                 mightWantToToggleControls = false
 
-                initialSeek = (psc.position / 83f)
+                initialSeek = (psc.position / 1000f)
                 initialBright = Utils.getScreenBrightness(this) ?: 0.5f
                 with (audioManager!!) {
                     initialVolume = getStreamVolume(STREAM_TYPE)
@@ -1959,7 +2025,7 @@ class MPVActivity : AppCompatActivity(), MPVLib.EventObserver, TouchGesturesObse
             }
             PropertyChange.Seek -> {
                 // disable seeking when duration is unknown
-                val duration = (psc.duration / 83f)
+                val duration = (psc.duration / 1000f)
                 if (duration == 0f || initialSeek < 0)
                     return
                 if (smoothSeekGesture && pausedForSeek == 0) {
