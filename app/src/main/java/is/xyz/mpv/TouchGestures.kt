@@ -19,6 +19,11 @@ enum class PropertyChange {
     SeekFixed,
     PlayPause,
     Custom,
+    
+    /* Frame scrubbing */
+    FrameScrubStart,
+    FrameScrub,
+    FrameScrubFinalize,
 }
 
 internal interface TouchGesturesObserver {
@@ -33,6 +38,7 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
         ControlSeek,
         ControlVolume,
         ControlBright,
+        ControlFrameScrub,  // NEW: Frame scrubbing state
     }
 
     private var state = State.Up
@@ -61,6 +67,12 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
     private var tapGestureLeft : PropertyChange? = null
     private var tapGestureCenter : PropertyChange? = null
     private var tapGestureRight : PropertyChange? = null
+    
+    // NEW: Frame scrubbing settings
+    private var enableFrameScrub = true
+    private var frameScrubSensitivity = 50f // pixels per frame
+    private var frameScrubDelay = 200L // ms delay before activating
+    private var frameScrubAccumulator = 0f
 
     private inline fun checkFloat(vararg n: Float): Boolean {
         return !n.any { it.isInfinite() || it.isNaN() }
@@ -88,7 +100,7 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
         private const val TAP_DURATION = 300L
 
         // full sweep from left side to right side is 2:30
-        private const val CONTROL_SEEK_MAX = 80f
+        private const val CONTROL_SEEK_MAX = 150f
 
         // same as below, we rescale it inside MPVActivity
         private const val CONTROL_VOLUME_MAX = 1.5f
@@ -100,6 +112,9 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
         // do not trigger on X% of screen top/bottom
         // this is so that user can open android status bar
         private const val DEADZONE = 5
+        
+        // NEW: Frame scrubbing threshold multiplier
+        private const val FRAME_SCRUB_THRESHOLD_MULT = 1.5f
     }
 
     private fun processTap(p: PointF): Boolean {
@@ -149,8 +164,39 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
         when (state) {
             State.Up -> {}
             State.Down -> {
-                // we might get into one of Control states if user moves enough
-                if (abs(dx) > trigger) {
+                // NEW: Check for frame scrubbing first (if enabled and horizontal gesture configured)
+                if (enableFrameScrub && gestureHoriz == State.ControlSeek && abs(dx) > trigger) {
+                    val timeSinceDown = SystemClock.uptimeMillis() - lastDownTime
+                    
+                    // Determine if this should be frame scrub or regular seek
+                    // Frame scrub: slower, more deliberate movement after a delay
+                    if (timeSinceDown > frameScrubDelay) {
+                        // Check movement speed - slower movement = frame scrub
+                        val movementSpeed = abs(dx) / timeSinceDown // pixels per ms
+                        
+                        // If movement is slow enough, activate frame scrub
+                        if (movementSpeed < 1.0f) { // less than 1 pixel per ms
+                            state = State.ControlFrameScrub
+                            stateDirection = 0
+                            frameScrubAccumulator = 0f
+                            sendPropertyChange(PropertyChange.Init, 0f)
+                            sendPropertyChange(PropertyChange.FrameScrubStart, 0f)
+                            Log.d(TAG, "Frame scrub activated")
+                        } else {
+                            // Fast movement = regular seek
+                            state = State.ControlSeek
+                            stateDirection = 0
+                            sendPropertyChange(PropertyChange.Init, 0f)
+                        }
+                    } else {
+                        // Movement too soon = regular seek
+                        state = State.ControlSeek
+                        stateDirection = 0
+                        sendPropertyChange(PropertyChange.Init, 0f)
+                    }
+                }
+                // Original gesture detection logic
+                else if (abs(dx) > trigger) {
                     state = gestureHoriz
                     stateDirection = 0
                 } else if (abs(dy) > trigger) {
@@ -158,7 +204,7 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
                     stateDirection = 1
                 }
                 // send Init so that it has a chance to cache values before we start modifying them
-                if (state != State.Down)
+                if (state != State.Down && state != State.ControlFrameScrub)
                     sendPropertyChange(PropertyChange.Init, 0f)
             }
             State.ControlSeek ->
@@ -167,6 +213,16 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
                 sendPropertyChange(PropertyChange.Volume, CONTROL_VOLUME_MAX * dr)
             State.ControlBright ->
                 sendPropertyChange(PropertyChange.Bright, CONTROL_BRIGHT_MAX * dr)
+            State.ControlFrameScrub -> {
+                // NEW: Frame scrubbing logic
+                frameScrubAccumulator += dx / frameScrubSensitivity
+                val framesToStep = frameScrubAccumulator.toInt()
+                
+                if (abs(framesToStep) >= 1) {
+                    sendPropertyChange(PropertyChange.FrameScrub, framesToStep.toFloat())
+                    frameScrubAccumulator -= framesToStep.toFloat()
+                }
+            }
         }
         return state != State.Up && state != State.Down
     }
@@ -197,6 +253,11 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
         tapGestureLeft = map2[get("gesture_tap_left", R.string.pref_gesture_tap_left_default)]
         tapGestureCenter = map2[get("gesture_tap_center", R.string.pref_gesture_tap_center_default)]
         tapGestureRight = map2[get("gesture_tap_right", R.string.pref_gesture_tap_right_default)]
+        
+        // NEW: Frame scrubbing settings
+        enableFrameScrub = prefs.getBoolean("enable_frame_scrub", true)
+        frameScrubSensitivity = prefs.getString("frame_scrub_sensitivity", "50")?.toFloatOrNull() ?: 50f
+        frameScrubDelay = prefs.getString("frame_scrub_delay", "200")?.toLongOrNull() ?: 200L
     }
 
     fun onTouchEvent(e: MotionEvent): Boolean {
@@ -213,6 +274,10 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
         when (e.action) {
             MotionEvent.ACTION_UP -> {
                 gestureHandled = processMovement(point) or processTap(point)
+                // NEW: Send frame scrub finalize if we were frame scrubbing
+                if (state == State.ControlFrameScrub) {
+                    sendPropertyChange(PropertyChange.FrameScrubFinalize, 0f)
+                }
                 if (state != State.Down)
                     sendPropertyChange(PropertyChange.Finalize, 0f)
                 state = State.Up
@@ -225,6 +290,7 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
                 processTap(point)
                 lastPos.set(point)
                 state = State.Down
+                frameScrubAccumulator = 0f // NEW: Reset accumulator
                 // always return true on ACTION_DOWN to continue receiving events
                 gestureHandled = true
             }
