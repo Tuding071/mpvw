@@ -2019,15 +2019,6 @@ class MPVActivity : AppCompatActivity(), MPVLib.EventObserver, TouchGesturesObse
             PropertyChange.Custom -> {
                 val keycode = 0x10002 + diff.toInt()
                 MPVLib.command(arrayOf("keypress", "0x%x".format(keycode)))
-            PropertyChange.CustomArea -> {
-            // 🔹 Example action: show text, or perform a custom behavior
-            gestureTextView.text = "Custom Center Gesture: diff=$diff"
-
-            // Example: treat horizontal movement as brightness or a test action
-            if (diff > 0) {
-                // swipe right behavior
-            } else {
-                // swipe left behavior
             }
         }
     }
