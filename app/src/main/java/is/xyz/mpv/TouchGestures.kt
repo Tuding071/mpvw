@@ -104,7 +104,7 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
         // this is so that user can open android status bar
         private const val DEADZONE = 5
         
-        // Custom area constants
+        // Custom area constants: 5% top, 70% center, 25% bottom
         private const val CUSTOM_CENTER_TOP_PERCENT = 5f
         private const val CUSTOM_CENTER_BOTTOM_PERCENT = 75f // 100% - 25% free bottom = 75%
     }
@@ -221,9 +221,8 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
             MotionEvent.ACTION_UP -> {
                 // --- CUSTOM CENTER AREA LOGIC ---
                 if (isCustomCenterTouch) {
-                    // Only process as a tap if no movement gesture took place (State.Down)
+                    // Tap to Play/Pause (only if no significant movement occurred, state == State.Down)
                     if (state == State.Down) {
-                        // Custom Center Tap: Play/Pause
                         sendPropertyChange(PropertyChange.PlayPause, 0f)
                         lastTapTime = SystemClock.uptimeMillis() 
                         gestureHandled = true
@@ -243,12 +242,10 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
                 val customCenterTopY = height * CUSTOM_CENTER_TOP_PERCENT / 100f
                 val customCenterBottomY = height * CUSTOM_CENTER_BOTTOM_PERCENT / 100f
 
-                // deadzone on top/bottom
+                // Check for touch in the 5% top or 25% bottom free areas
                 if (e.y < customCenterTopY || e.y > customCenterBottomY) {
-                    // Touch is in the 'free' areas (top 5% or bottom 25%).
                     isCustomCenterTouch = false
-                    // The old DEADZONE logic is now ONLY for non-custom center areas.
-                    // If the touch is in the new free area, we return false to ignore it entirely.
+                    // return false to ignore the touch entirely
                     return false 
                 }
                 
@@ -256,8 +253,7 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
                 isCustomCenterTouch = true
                 
                 initialPos.set(point)
-                // We SKIP processTap(point) here and rely on the ACTION_UP custom logic
-                // to prevent existing double-tap logic from firing in our area.
+                // We SKIP processTap(point) here to prevent existing tap logic from running.
                 lastPos.set(point)
                 state = State.Down
                 // always return true on ACTION_DOWN to continue receiving events
@@ -268,7 +264,6 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
                 if (isCustomCenterTouch) {
                     // Block original movement processing (processMovement) to prevent 
                     // Seek/Volume/Bright gestures in the custom area.
-                    // Just update lastPos and return true to continue tracking the touch.
                     lastPos.set(point)
                     gestureHandled = true
                 } else {
