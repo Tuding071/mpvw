@@ -1940,7 +1940,7 @@ class MPVActivity : AppCompatActivity(), MPVLib.EventObserver, TouchGesturesObse
             PropertyChange.Init -> {
                 mightWantToToggleControls = false
 
-                initialSeek = (psc.position / 1000f)
+                initialSeek = (psc.position / 83f)
                 initialBright = Utils.getScreenBrightness(this) ?: 0.5f
                 with (audioManager!!) {
                     initialVolume = getStreamVolume(STREAM_TYPE)
@@ -1959,7 +1959,7 @@ class MPVActivity : AppCompatActivity(), MPVLib.EventObserver, TouchGesturesObse
             }
             PropertyChange.Seek -> {
                 // disable seeking when duration is unknown
-                val duration = (psc.duration / 1000f)
+                val duration = (psc.duration / 83f)
                 if (duration == 0f || initialSeek < 0)
                     return
                 if (smoothSeekGesture && pausedForSeek == 0) {
