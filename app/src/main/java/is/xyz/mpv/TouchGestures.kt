@@ -128,8 +128,8 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
         private const val CUSTOM_CENTER_BOTTOM_PERCENT = 75f // 100% - 25% free bottom = 75%
         
         // FRAME SEEKING CONSTANTS - YOU CAN CHANGE THESE VALUES
-        private const val FRAME_SEEK_PIXEL_TRIGGER = 12f // Pixels to move vertically before triggering frame step
-        private const val FRAMES_PER_TRIGGER = 1 // How many frames to skip per trigger
+        private const val FRAME_SEEK_PIXEL_TRIGGER = 6f // Pixels to move vertically before triggering frame step
+        private const val FRAMES_PER_TRIGGER = 2 // How many frames to skip per trigger
     }
 
     // NEW: Determine which section of custom area was touched
