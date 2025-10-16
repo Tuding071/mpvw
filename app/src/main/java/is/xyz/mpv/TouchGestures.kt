@@ -128,8 +128,8 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
         private const val CUSTOM_CENTER_BOTTOM_PERCENT = 75f // 100% - 25% free bottom = 75%
         
         // TIME SEEKING CONSTANTS - YOU CAN CHANGE THESE VALUES
-        private const val TIME_SEEK_PIXEL_TRIGGER = 12f // Pixels to move vertically before triggering time seek
-        private const val MILLISECONDS_PER_TRIGGER = 13f // Milliseconds to seek per trigger (80ms per 12 pixels)
+        private const val TIME_SEEK_PIXEL_TRIGGER = 60f // Pixels to move vertically before triggering time seek
+        private const val MILLISECONDS_PER_TRIGGER = 80f // Milliseconds to seek per trigger (80ms per 12 pixels)
     }
 
     // Determine which section of custom area was touched
