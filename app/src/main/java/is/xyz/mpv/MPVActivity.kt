@@ -1931,9 +1931,12 @@ class MPVActivity : AppCompatActivity(), MPVLib.EventObserver, TouchGesturesObse
         fadeHandler.postDelayed(fadeRunnable3, 500L)
     }
 
-    // Add this variable at the top of your MPVActivity class
-    private var wasVideoPlayingBeforeFrameSeek = false
+    // Add this at the top of your MPVActivity.kt file with other imports
+    import kotlin.math.abs
 
+// Add this variable at the top of your MPVActivity class
+    private var wasVideoPlayingBeforeFrameSeek = false
+    
     override fun onPropertyChange(p: PropertyChange, diff: Float) {
     val gestureTextView = binding.gestureTextView
     when (p) {
@@ -2024,16 +2027,7 @@ class MPVActivity : AppCompatActivity(), MPVLib.EventObserver, TouchGesturesObse
             MPVLib.command(arrayOf("keypress", "0x%x".format(keycode)))
         }
         
-        /* Frame seeking - KEEP THIS for backward compatibility */
-        PropertyChange.FrameSeek -> {
-            if (diff > 0) {
-                MPVLib.command(arrayOf("frame-step"))
-            } else {
-                MPVLib.command(arrayOf("frame-back-step"))
-            }
-        }
-        
-        /* Time seeking - NEW: Time-based seeking for custom center area */
+        /* Time seeking - Time-based seeking for custom center area */
         PropertyChange.TimeSeek -> {
             // diff contains milliseconds to seek (positive = forward, negative = backward)
             val seekSeconds = diff / 1000f // Convert ms to seconds for MPV
