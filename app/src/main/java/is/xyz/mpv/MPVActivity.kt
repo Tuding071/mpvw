@@ -51,6 +51,7 @@ import androidx.media.AudioManagerCompat
 import java.io.File
 import java.lang.IllegalArgumentException
 import kotlin.math.roundToInt
+import kotlin.math.abs
 
 typealias ActivityResultCallback = (Int, Intent?) -> Unit
 typealias StateRestoreCallback = () -> Unit
@@ -1930,9 +1931,6 @@ class MPVActivity : AppCompatActivity(), MPVLib.EventObserver, TouchGesturesObse
 
         fadeHandler.postDelayed(fadeRunnable3, 500L)
     }
-
-    // Add this at the top of your MPVActivity.kt file with other imports
-    import kotlin.math.abs
 
 // Add this variable at the top of your MPVActivity class
     private var wasVideoPlayingBeforeFrameSeek = false
