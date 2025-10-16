@@ -2024,7 +2024,7 @@ class MPVActivity : AppCompatActivity(), MPVLib.EventObserver, TouchGesturesObse
             MPVLib.command(arrayOf("keypress", "0x%x".format(keycode)))
         }
         
-        /* Frame seeking */
+        /* Frame seeking - KEEP THIS for backward compatibility */
         PropertyChange.FrameSeek -> {
             if (diff > 0) {
                 MPVLib.command(arrayOf("frame-step"))
@@ -2032,13 +2032,25 @@ class MPVActivity : AppCompatActivity(), MPVLib.EventObserver, TouchGesturesObse
                 MPVLib.command(arrayOf("frame-back-step"))
             }
         }
+        
+        /* Time seeking - NEW: Time-based seeking for custom center area */
+        PropertyChange.TimeSeek -> {
+            // diff contains milliseconds to seek (positive = forward, negative = backward)
+            val seekSeconds = diff / 1000f // Convert ms to seconds for MPV
+            MPVLib.command(arrayOf("seek", seekSeconds.toString(), "relative"))
+            
+            // Optional: Show seek feedback in gesture text view
+            val direction = if (diff > 0) "+" else ""
+            val timeText = String.format("%s%.1fs", direction, abs(seekSeconds))
+            gestureTextView.text = getString(R.string.ui_seek_distance, Utils.prettyTime(psc.positionSec), timeText)
+        }
         PropertyChange.Pause -> {
-            // Store whether video was playing before pausing for frame seeking
+            // Store whether video was playing before pausing for seeking
             wasVideoPlayingBeforeFrameSeek = !psc.pause
             MPVLib.setPropertyBoolean("pause", true)
         }
         PropertyChange.Resume -> {
-            // Only resume if video was playing before frame seeking
+            // Only resume if video was playing before seeking
             if (wasVideoPlayingBeforeFrameSeek) {
                 MPVLib.setPropertyBoolean("pause", false)
             }
