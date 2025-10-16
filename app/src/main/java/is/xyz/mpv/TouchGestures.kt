@@ -38,45 +38,39 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
         ControlSeek,
         ControlVolume,
         ControlBright,
-        ControlTimeSeek, // Time seeking state for custom center area
+        ControlTimeSeek,
     }
 
     private enum class CustomAreaSection {
-        LEFT,    // Time seeking: vertical gestures
-        CENTER,  // Tap play/pause only
-        RIGHT,   // Time seeking: vertical gestures
-        NONE     // Outside custom area
+        LEFT,
+        CENTER,
+        RIGHT,
+        NONE
     }
 
     private var state = State.Up
-    // relevant movement direction for the current state (0=H, 1=V)
     private var stateDirection = 0
 
-    // timestamp of the last tap (ACTION_UP)
     private var lastTapTime = 0L
-    // when the current gesture began
     private var lastDownTime = 0L
 
-    // where user initially placed their finger (ACTION_DOWN)
     private var initialPos = PointF()
-    // last non-throttled processed position
     private var lastPos = PointF()
     
-    // Track time seeking progress
-    private var timeSeekStartPos = PointF() // Starting position for time seeking
-    private var lastTimeTriggerPos = PointF() // Last position where time seek was triggered
+    private var timeSeekStartPos = PointF()
+    private var lastTimeTriggerPos = PointF()
 
     private var width = 0f
     private var height = 0f
-    // minimum movement which triggers a Control state
     private var trigger = 0f
     
-    // Custom area tracking
+    // NEW: Separate trigger for custom area time seeking
+    private var customAreaTrigger = 0f
+    
     private var isCustomCenterTouch = false 
     private var customAreaSection = CustomAreaSection.NONE
     private var wasVideoPlayingBeforeSeek = false
 
-    // which property change should be invoked where
     private var gestureHoriz = State.Down
     private var gestureVertLeft = State.Down
     private var gestureVertRight = State.Down
@@ -97,52 +91,39 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
         this.width = width
         this.height = height
         trigger = min(width, height) / TRIGGER_RATE
+        // NEW: Custom area trigger is much smaller for immediate response
+        customAreaTrigger = min(width, height) / CUSTOM_TRIGGER_RATE
     }
 
     companion object {
         private const val TAG = "mpv"
 
-        // ratio for trigger, 1/Xth of minimum dimension
-        // for tap gestures this is the distance that must *not* be moved for it to trigger
         private const val TRIGGER_RATE = 30
+        // NEW: Much more sensitive trigger for custom area
+        private const val CUSTOM_TRIGGER_RATE = 100
 
-        // maximum duration between taps (ms) for a double tap to count
         private const val TAP_DURATION = 300L
-
-        // full sweep from left side to right side is 2:30
         private const val CONTROL_SEEK_MAX = 150f
-
-        // same as below, we rescale it inside MPVActivity
         private const val CONTROL_VOLUME_MAX = 1.5f
-
-        // brightness is scaled 0..1; max's not 1f so that user does not have to start from the bottom
-        // if they want to go from none to full brightness
         private const val CONTROL_BRIGHT_MAX = 1.5f
-
-        // do not trigger on X% of screen top/bottom
-        // this is so that user can open android status bar
         private const val DEADZONE = 5
         
-        // Custom area constants: 5% top, 70% center, 25% bottom
         private const val CUSTOM_CENTER_TOP_PERCENT = 5f
-        private const val CUSTOM_CENTER_BOTTOM_PERCENT = 75f // 100% - 25% free bottom = 75%
+        private const val CUSTOM_CENTER_BOTTOM_PERCENT = 75f
         
-        // TIME SEEKING CONSTANTS - YOU CAN CHANGE THESE VALUES
-        private const val TIME_SEEK_PIXEL_TRIGGER = 60f // Pixels to move vertically before triggering time seek
-        private const val MILLISECONDS_PER_TRIGGER = 80f // Milliseconds to seek per trigger (80ms per 12 pixels)
+        // TIME SEEKING CONSTANTS - MAKE THESE MORE SENSITIVE
+        private const val TIME_SEEK_PIXEL_TRIGGER = 8f // Reduced from 12px for faster response
+        private const val MILLISECONDS_PER_TRIGGER = 80f
     }
 
-    // Determine which section of custom area was touched
     private fun getCustomAreaSection(x: Float, y: Float): CustomAreaSection {
         val customCenterTopY = height * CUSTOM_CENTER_TOP_PERCENT / 100f
         val customCenterBottomY = height * CUSTOM_CENTER_BOTTOM_PERCENT / 100f
         
-        // Check if touch is within custom center area
         if (y < customCenterTopY || y > customCenterBottomY) {
             return CustomAreaSection.NONE
         }
         
-        // Divide custom area into 3 vertical sections
         val sectionWidth = width / 3f
         
         return when {
@@ -155,22 +136,19 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
     private fun processTap(p: PointF): Boolean {
         if (state == State.Up) {
             lastDownTime = SystemClock.uptimeMillis()
-            // 3 is another arbitrary value here that seems good enough
             if (PointF(lastPos.x - p.x, lastPos.y - p.y).length() > trigger * 3)
-                lastTapTime = 0 // last tap was too far away, invalidate
+                lastTapTime = 0
             return true
         }
-        // discard if any movement gesture took place
         if (state != State.Down)
             return false
 
         val now = SystemClock.uptimeMillis()
         if (now - lastDownTime >= TAP_DURATION) {
-            lastTapTime = 0 // finger was held too long, reset
+            lastTapTime = 0
             return false
         }
         if (now - lastTapTime < TAP_DURATION) {
-            // [ Left 28% ] [    Center    ] [ Right 28% ]
             if (p.x <= width * 0.28f)
                 tapGestureLeft?.let { sendPropertyChange(it, -1f); return true }
             else if (p.x >= width * 0.72f)
@@ -185,8 +163,6 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
     }
 
     private fun processMovement(p: PointF): Boolean {
-        // throttle events: only send updates when there's some movement compared to last update
-        // 3 here is arbitrary
         if (PointF(lastPos.x - p.x, lastPos.y - p.y).length() < trigger / 3)
             return false
         lastPos.set(p)
@@ -199,7 +175,6 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
         when (state) {
             State.Up -> {}
             State.Down -> {
-                // we might get into one of Control states if user moves enough
                 if (abs(dx) > trigger) {
                     state = gestureHoriz
                     stateDirection = 0
@@ -207,7 +182,6 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
                     state = if (initialPos.x > width / 2) gestureVertRight else gestureVertLeft
                     stateDirection = 1
                 }
-                // send Init so that it has a chance to cache values before we start modifying them
                 if (state != State.Down)
                     sendPropertyChange(PropertyChange.Init, 0f)
             }
@@ -218,27 +192,26 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
             State.ControlBright ->
                 sendPropertyChange(PropertyChange.Bright, CONTROL_BRIGHT_MAX * dr)
             State.ControlTimeSeek -> {
-                // Time seeking handled separately in processVerticalTimeSeek
+                // Time seeking handled separately
             }
         }
         return state != State.Up && state != State.Down
     }
     
-    // Process vertical time seeking in custom left/right areas
+    // NEW: Simplified time seeking without throttling
     private fun processVerticalTimeSeek(p: PointF): Boolean {
         val dy = p.y - lastTimeTriggerPos.y
-        val absDy = abs(dy)
         
-        // Check if we've moved enough pixels vertically to trigger a time seek
-        if (absDy >= TIME_SEEK_PIXEL_TRIGGER) {
-            // UP = forward, DOWN = backward (swipe up to go forward in time)
-            val direction = if (dy < 0) 1f else -1f // Negative dy = up = forward
+        // Check if we've moved enough pixels vertically (absolute value)
+        if (abs(dy) >= TIME_SEEK_PIXEL_TRIGGER) {
+            // UP = forward, DOWN = backward
+            val direction = if (dy < 0) 1f else -1f
             
-            // Send time seek command (milliseconds)
+            // Send time seek command
             val seekMs = direction * MILLISECONDS_PER_TRIGGER
             sendPropertyChange(PropertyChange.TimeSeek, seekMs)
             
-            // Reset trigger position for next boundary
+            // ALWAYS update trigger position to prevent accumulation
             lastTimeTriggerPos.set(lastTimeTriggerPos.x, p.y)
         }
         
@@ -289,54 +262,45 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
                 if (isCustomCenterTouch) {
                     when (state) {
                         State.ControlTimeSeek -> {
-                            // Only resume if video was playing before time seeking
                             if (wasVideoPlayingBeforeSeek) {
                                 sendPropertyChange(PropertyChange.Resume, 0f)
                             }
                         }
                         State.Down -> {
-                            // Only process tap if we're in CENTER section
                             if (customAreaSection == CustomAreaSection.CENTER) {
                                 sendPropertyChange(PropertyChange.PlayPause, 0f)
                                 lastTapTime = SystemClock.uptimeMillis() 
                             }
                         }
-                        else -> {
-                            // Handle other states if needed
-                        }
+                        else -> {}
                     }
                     gestureHandled = true
                     isCustomCenterTouch = false
                     customAreaSection = CustomAreaSection.NONE
                     state = State.Up
                 } else {
-                    // Original Logic for non-custom areas
                     gestureHandled = processMovement(point) or processTap(point)
-                    
                     if (state != State.Down)
                         sendPropertyChange(PropertyChange.Finalize, 0f)
                     state = State.Up
                 }
             }
             MotionEvent.ACTION_DOWN -> {
-                // Determine which section was touched
                 customAreaSection = getCustomAreaSection(e.x, e.y)
                 
                 if (customAreaSection == CustomAreaSection.NONE) {
                     isCustomCenterTouch = false
-                    return false // Ignore touches outside custom area
+                    return false
                 }
                 
-                // Touch is in custom area
                 isCustomCenterTouch = true
                 initialPos.set(point)
                 timeSeekStartPos.set(point)
-                lastTimeTriggerPos.set(point)
+                lastTimeTriggerPos.set(point) // Reset trigger position
                 
-                // If touch is in LEFT or RIGHT section, prepare for time seeking
                 if (customAreaSection == CustomAreaSection.LEFT || customAreaSection == CustomAreaSection.RIGHT) {
-                    wasVideoPlayingBeforeSeek = true // Assume playing, MPVActivity will correct this
-                    sendPropertyChange(PropertyChange.Pause, 0f) // Pause when starting time seeking
+                    wasVideoPlayingBeforeSeek = true
+                    sendPropertyChange(PropertyChange.Pause, 0f)
                 }
                 
                 lastPos.set(point)
@@ -347,11 +311,10 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
                 if (isCustomCenterTouch) {
                     when (state) {
                         State.Down -> {
-                            // Only check for time seeking gestures in LEFT/RIGHT sections
                             if (customAreaSection == CustomAreaSection.LEFT || customAreaSection == CustomAreaSection.RIGHT) {
                                 val dy = point.y - initialPos.y
-                                // Check if vertical movement exceeds threshold for time seeking
-                                if (abs(dy) > trigger) {
+                                // USE CUSTOM TRIGGER for faster response
+                                if (abs(dy) > customAreaTrigger) {
                                     state = State.ControlTimeSeek
                                     gestureHandled = processVerticalTimeSeek(point)
                                 } else {
@@ -359,22 +322,19 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
                                     gestureHandled = true
                                 }
                             } else {
-                                // In CENTER section, just track position but don't start gestures
                                 lastPos.set(point)
                                 gestureHandled = true
                             }
                         }
                         State.ControlTimeSeek -> {
-                            // Continue time seeking in LEFT/RIGHT sections
                             gestureHandled = processVerticalTimeSeek(point)
                         }
-                        State.Up, State.ControlSeek, State.ControlVolume, State.ControlBright -> {
+                        else -> {
                             lastPos.set(point)
                             gestureHandled = true
                         }
                     }
                 } else {
-                    // Original logic for other areas
                     gestureHandled = processMovement(point)
                 }
             }
