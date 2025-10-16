@@ -57,15 +57,13 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
     private var initialPos = PointF()
     private var lastPos = PointF()
     
+    // Track time seeking progress
     private var timeSeekStartPos = PointF()
-    private var lastTimeTriggerPos = PointF()
+    private var lastBoundaryCrossPos = PointF() // Tracks the last boundary crossing
 
     private var width = 0f
     private var height = 0f
     private var trigger = 0f
-    
-    // NEW: Separate trigger for custom area time seeking
-    private var customAreaTrigger = 0f
     
     private var isCustomCenterTouch = false 
     private var customAreaSection = CustomAreaSection.NONE
@@ -91,17 +89,12 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
         this.width = width
         this.height = height
         trigger = min(width, height) / TRIGGER_RATE
-        // NEW: Custom area trigger is much smaller for immediate response
-        customAreaTrigger = min(width, height) / CUSTOM_TRIGGER_RATE
     }
 
     companion object {
         private const val TAG = "mpv"
 
         private const val TRIGGER_RATE = 30
-        // NEW: Much more sensitive trigger for custom area
-        private const val CUSTOM_TRIGGER_RATE = 100
-
         private const val TAP_DURATION = 300L
         private const val CONTROL_SEEK_MAX = 150f
         private const val CONTROL_VOLUME_MAX = 1.5f
@@ -111,9 +104,9 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
         private const val CUSTOM_CENTER_TOP_PERCENT = 5f
         private const val CUSTOM_CENTER_BOTTOM_PERCENT = 75f
         
-        // TIME SEEKING CONSTANTS - MAKE THESE MORE SENSITIVE
-        private const val TIME_SEEK_PIXEL_TRIGGER = 8f // Reduced from 12px for faster response
-        private const val MILLISECONDS_PER_TRIGGER = 80f
+        // TIME JUMPING CONSTANTS - YOU CAN CHANGE THESE
+        private const val PIXEL_BOUNDARY = 12f // Every 12 pixels = one jump
+        private const val MILLISECONDS_PER_JUMP = 80f // 80ms jump per boundary
     }
 
     private fun getCustomAreaSection(x: Float, y: Float): CustomAreaSection {
@@ -192,27 +185,32 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
             State.ControlBright ->
                 sendPropertyChange(PropertyChange.Bright, CONTROL_BRIGHT_MAX * dr)
             State.ControlTimeSeek -> {
-                // Time seeking handled separately
+                // Time jumping handled separately
             }
         }
         return state != State.Up && state != State.Down
     }
     
-    // NEW: Simplified time seeking without throttling
-    private fun processVerticalTimeSeek(p: PointF): Boolean {
-        val dy = p.y - lastTimeTriggerPos.y
+    // NEW: Discrete time jumping with boundary reset
+    private fun processVerticalTimeJump(p: PointF): Boolean {
+        val dy = p.y - lastBoundaryCrossPos.y
+        val absDy = abs(dy)
         
-        // Check if we've moved enough pixels vertically (absolute value)
-        if (abs(dy) >= TIME_SEEK_PIXEL_TRIGGER) {
-            // UP = forward, DOWN = backward
+        // Calculate how many boundaries we've crossed
+        val boundariesCrossed = (absDy / PIXEL_BOUNDARY).toInt()
+        
+        if (boundariesCrossed > 0) {
+            // Determine direction: UP = forward, DOWN = backward
             val direction = if (dy < 0) 1f else -1f
             
-            // Send time seek command
-            val seekMs = direction * MILLISECONDS_PER_TRIGGER
-            sendPropertyChange(PropertyChange.TimeSeek, seekMs)
+            // Calculate total time to jump
+            val totalJumpMs = direction * boundariesCrossed * MILLISECONDS_PER_JUMP
             
-            // ALWAYS update trigger position to prevent accumulation
-            lastTimeTriggerPos.set(lastTimeTriggerPos.x, p.y)
+            // Send the jump command
+            sendPropertyChange(PropertyChange.TimeSeek, totalJumpMs)
+            
+            // RESET the starting point to the current position for next boundary
+            lastBoundaryCrossPos.set(p.x, p.y)
         }
         
         return true
@@ -296,7 +294,7 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
                 isCustomCenterTouch = true
                 initialPos.set(point)
                 timeSeekStartPos.set(point)
-                lastTimeTriggerPos.set(point) // Reset trigger position
+                lastBoundaryCrossPos.set(point) // Reset boundary tracking
                 
                 if (customAreaSection == CustomAreaSection.LEFT || customAreaSection == CustomAreaSection.RIGHT) {
                     wasVideoPlayingBeforeSeek = true
@@ -313,10 +311,9 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
                         State.Down -> {
                             if (customAreaSection == CustomAreaSection.LEFT || customAreaSection == CustomAreaSection.RIGHT) {
                                 val dy = point.y - initialPos.y
-                                // USE CUSTOM TRIGGER for faster response
-                                if (abs(dy) > customAreaTrigger) {
+                                if (abs(dy) > trigger) {
                                     state = State.ControlTimeSeek
-                                    gestureHandled = processVerticalTimeSeek(point)
+                                    gestureHandled = processVerticalTimeJump(point)
                                 } else {
                                     lastPos.set(point)
                                     gestureHandled = true
@@ -327,7 +324,7 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
                             }
                         }
                         State.ControlTimeSeek -> {
-                            gestureHandled = processVerticalTimeSeek(point)
+                            gestureHandled = processVerticalTimeJump(point)
                         }
                         else -> {
                             lastPos.set(point)
