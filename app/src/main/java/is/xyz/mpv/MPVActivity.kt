@@ -1931,6 +1931,9 @@ class MPVActivity : AppCompatActivity(), MPVLib.EventObserver, TouchGesturesObse
         fadeHandler.postDelayed(fadeRunnable3, 500L)
     }
 
+    // Add this variable at the top of your MPVActivity class
+    private var wasVideoPlayingBeforeFrameSeek = false
+
     override fun onPropertyChange(p: PropertyChange, diff: Float) {
     val gestureTextView = binding.gestureTextView
     when (p) {
@@ -2030,10 +2033,15 @@ class MPVActivity : AppCompatActivity(), MPVLib.EventObserver, TouchGesturesObse
             }
         }
         PropertyChange.Pause -> {
+            // Store whether video was playing before pausing for frame seeking
+            wasVideoPlayingBeforeFrameSeek = !psc.pause
             MPVLib.setPropertyBoolean("pause", true)
         }
         PropertyChange.Resume -> {
-            MPVLib.setPropertyBoolean("pause", false)
+            // Only resume if video was playing before frame seeking
+            if (wasVideoPlayingBeforeFrameSeek) {
+                MPVLib.setPropertyBoolean("pause", false)
+            }
         }
     }
 }
