@@ -66,8 +66,8 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
     
     // Custom flag: true if the touch started in the custom center area
     private var isCustomCenterTouch = false 
-    // NEW: Track if we've paused the video for frame seeking
-    private var wasPausedForFrameSeek = false
+    // NEW: Track pause state for frame seeking
+    private var wasVideoPlayingBeforeSeek = false
 
     // which property change should be invoked where
     private var gestureHoriz = State.Down
@@ -121,7 +121,7 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
         private const val CUSTOM_CENTER_BOTTOM_PERCENT = 75f // 100% - 25% free bottom = 75%
         
         // NEW: Frame seeking constants - YOU CAN CHANGE THESE VALUES
-        private const val FRAME_SEEK_PIXEL_TRIGGER = 12f // Pixels to move before triggering frame step
+        private const val FRAME_SEEK_PIXEL_TRIGGER = 8f // Reduced from 12px to 8px for faster response
     }
 
     private fun processTap(p: PointF): Boolean {
@@ -260,9 +260,10 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
                 if (isCustomCenterTouch) {
                     when (state) {
                         State.ControlFrameSeek -> {
-                            // Resume playback after frame seeking
-                            sendPropertyChange(PropertyChange.Resume, 0f)
-                            wasPausedForFrameSeek = false
+                            // Only resume if video was playing before frame seeking
+                            if (wasVideoPlayingBeforeSeek) {
+                                sendPropertyChange(PropertyChange.Resume, 0f)
+                            }
                         }
                         State.Down -> {
                             // Tap to Play/Pause (only if no significant movement occurred)
@@ -303,7 +304,10 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
                 initialPos.set(point)
                 frameSeekStartPos.set(point) // NEW: Set starting point for frame seeking
                 lastFrameTriggerPos.set(point) // NEW: Set initial trigger position
-                wasPausedForFrameSeek = false // NEW: Reset pause state
+                
+                // Store current play state - we'll check this in MPVActivity
+                wasVideoPlayingBeforeSeek = true // Assume playing, MPVActivity will correct this
+                sendPropertyChange(PropertyChange.Pause, 0f) // Always pause when starting frame seeking
                 
                 // We SKIP processTap(point) here to prevent existing tap logic from running.
                 lastPos.set(point)
@@ -320,11 +324,6 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
                             // Check if horizontal movement exceeds threshold for frame seeking
                             if (abs(dx) > trigger) {
                                 state = State.ControlFrameSeek
-                                // Pause video when starting frame seeking
-                                if (!wasPausedForFrameSeek) {
-                                    sendPropertyChange(PropertyChange.Pause, 0f)
-                                    wasPausedForFrameSeek = true
-                                }
                                 gestureHandled = processFrameSeek(point)
                             } else {
                                 // Still in down state, just update position
