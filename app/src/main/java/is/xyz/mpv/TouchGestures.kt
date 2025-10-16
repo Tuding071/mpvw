@@ -19,6 +19,11 @@ enum class PropertyChange {
     SeekFixed,
     PlayPause,
     Custom,
+    
+    /* Frame seeking */
+    FrameSeek,
+    Pause,
+    Resume,
 }
 
 internal interface TouchGesturesObserver {
@@ -33,6 +38,7 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
         ControlSeek,
         ControlVolume,
         ControlBright,
+        ControlFrameSeek, // NEW: Frame seeking state for custom center area
     }
 
     private var state = State.Up
@@ -48,6 +54,10 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
     private var initialPos = PointF()
     // last non-throttled processed position
     private var lastPos = PointF()
+    
+    // NEW: Track frame seeking progress
+    private var frameSeekStartPos = PointF() // Starting position for frame seeking
+    private var accumulatedFrames = 0 // Total frames seeked in current gesture
 
     private var width = 0f
     private var height = 0f
@@ -56,6 +66,8 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
     
     // Custom flag: true if the touch started in the custom center area
     private var isCustomCenterTouch = false 
+    // NEW: Track if we've paused the video for frame seeking
+    private var wasPausedForFrameSeek = false
 
     // which property change should be invoked where
     private var gestureHoriz = State.Down
@@ -107,6 +119,10 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
         // Custom area constants: 5% top, 70% center, 25% bottom
         private const val CUSTOM_CENTER_TOP_PERCENT = 5f
         private const val CUSTOM_CENTER_BOTTOM_PERCENT = 75f // 100% - 25% free bottom = 75%
+        
+        // NEW: Frame seeking constants - YOU CAN CHANGE THESE VALUES
+        private const val FRAME_SEEK_PIXEL_TRIGGER = 12f // Pixels to move before triggering frame step
+        private const val FRAMES_PER_TRIGGER = 1 // How many frames to skip per trigger
     }
 
     private fun processTap(p: PointF): Boolean {
@@ -177,6 +193,32 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
         }
         return state != State.Up && state != State.Down
     }
+    
+    // NEW: Process frame seeking in custom center area
+    private fun processFrameSeek(p: PointF): Boolean {
+        val dx = p.x - frameSeekStartPos.x
+        val absDx = abs(dx)
+        
+        // Check if we've moved enough pixels to trigger a frame step
+        if (absDx >= FRAME_SEEK_PIXEL_TRIGGER) {
+            val direction = if (dx > 0) 1f else -1f // 1 = forward, -1 = backward
+            
+            // Calculate how many frame triggers we've passed
+            val triggersPassed = (absDx / FRAME_SEEK_PIXEL_TRIGGER).toInt()
+            val framesToSeek = triggersPassed * FRAMES_PER_TRIGGER * direction.toInt()
+            
+            // Only send if we have new frames to seek
+            if (framesToSeek != 0) {
+                accumulatedFrames += framesToSeek
+                sendPropertyChange(PropertyChange.FrameSeek, accumulatedFrames.toFloat())
+                
+                // Reset starting position for next trigger
+                frameSeekStartPos.set(p.x, frameSeekStartPos.y)
+            }
+        }
+        
+        return true
+    }
 
     private fun sendPropertyChange(p: PropertyChange, diff: Float) {
         observer.onPropertyChange(p, diff)
@@ -221,22 +263,33 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
             MotionEvent.ACTION_UP -> {
                 // --- CUSTOM CENTER AREA LOGIC ---
                 if (isCustomCenterTouch) {
-                    // Tap to Play/Pause (only if no significant movement occurred, state == State.Down)
-                    if (state == State.Down) {
-                        sendPropertyChange(PropertyChange.PlayPause, 0f)
-                        lastTapTime = SystemClock.uptimeMillis() 
-                        gestureHandled = true
+                    when (state) {
+                        State.ControlFrameSeek -> {
+                            // Resume playback after frame seeking
+                            sendPropertyChange(PropertyChange.Resume, 0f)
+                            wasPausedForFrameSeek = false
+                        }
+                        State.Down -> {
+                            // Tap to Play/Pause (only if no significant movement occurred)
+                            sendPropertyChange(PropertyChange.PlayPause, 0f)
+                            lastTapTime = SystemClock.uptimeMillis() 
+                        }
                     }
+                    gestureHandled = true
                     isCustomCenterTouch = false
+                    
+                    // Reset frame seeking state
+                    accumulatedFrames = 0
+                    state = State.Up
                 } else {
                     // Original Logic for non-custom areas
                     gestureHandled = processMovement(point) or processTap(point)
+                    
+                    if (state != State.Down)
+                        sendPropertyChange(PropertyChange.Finalize, 0f)
+                    state = State.Up
                 }
                 // --- END CUSTOM CENTER AREA LOGIC ---
-                
-                if (state != State.Down)
-                    sendPropertyChange(PropertyChange.Finalize, 0f)
-                state = State.Up
             }
             MotionEvent.ACTION_DOWN -> {
                 val customCenterTopY = height * CUSTOM_CENTER_TOP_PERCENT / 100f
@@ -253,6 +306,10 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
                 isCustomCenterTouch = true
                 
                 initialPos.set(point)
+                frameSeekStartPos.set(point) // NEW: Set starting point for frame seeking
+                accumulatedFrames = 0 // NEW: Reset frame counter
+                wasPausedForFrameSeek = false // NEW: Reset pause state
+                
                 // We SKIP processTap(point) here to prevent existing tap logic from running.
                 lastPos.set(point)
                 state = State.Down
@@ -262,10 +319,33 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
             MotionEvent.ACTION_MOVE -> {
                 // --- CUSTOM CENTER AREA LOGIC ---
                 if (isCustomCenterTouch) {
-                    // Block original movement processing (processMovement) to prevent 
-                    // Seek/Volume/Bright gestures in the custom area.
-                    lastPos.set(point)
-                    gestureHandled = true
+                    when (state) {
+                        State.Down -> {
+                            val dx = point.x - initialPos.x
+                            // Check if horizontal movement exceeds threshold for frame seeking
+                            if (abs(dx) > trigger) {
+                                state = State.ControlFrameSeek
+                                // Pause video when starting frame seeking
+                                if (!wasPausedForFrameSeek) {
+                                    sendPropertyChange(PropertyChange.Pause, 0f)
+                                    wasPausedForFrameSeek = true
+                                }
+                                gestureHandled = processFrameSeek(point)
+                            } else {
+                                // Still in down state, just update position
+                                lastPos.set(point)
+                                gestureHandled = true
+                            }
+                        }
+                        State.ControlFrameSeek -> {
+                            // Continue frame seeking
+                            gestureHandled = processFrameSeek(point)
+                        }
+                        else -> {
+                            lastPos.set(point)
+                            gestureHandled = true
+                        }
+                    }
                 } else {
                     // Original logic for other areas
                     gestureHandled = processMovement(point)
