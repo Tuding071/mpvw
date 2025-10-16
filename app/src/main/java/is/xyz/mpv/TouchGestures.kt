@@ -21,7 +21,7 @@ enum class PropertyChange {
     Custom,
     
     /* Time seeking */
-    TimeSeek,  // Changed from FrameSeek to TimeSeek
+    TimeSeek,
     Pause,
     Resume,
 }
@@ -38,7 +38,7 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
         ControlSeek,
         ControlVolume,
         ControlBright,
-        ControlTimeSeek, // Changed from ControlFrameSeek to ControlTimeSeek
+        ControlTimeSeek, // Time seeking state for custom center area
     }
 
     private enum class CustomAreaSection {
@@ -129,7 +129,7 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
         
         // TIME SEEKING CONSTANTS - YOU CAN CHANGE THESE VALUES
         private const val TIME_SEEK_PIXEL_TRIGGER = 12f // Pixels to move vertically before triggering time seek
-        private const val MILLISECONDS_PER_TRIGGER = 80f // Milliseconds to seek per trigger
+        private const val MILLISECONDS_PER_TRIGGER = 80f // Milliseconds to seek per trigger (80ms per 12 pixels)
     }
 
     // Determine which section of custom area was touched
