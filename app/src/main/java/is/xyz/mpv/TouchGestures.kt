@@ -38,7 +38,14 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
         ControlSeek,
         ControlVolume,
         ControlBright,
-        ControlFrameSeek, // NEW: Frame seeking state for custom center area
+        ControlFrameSeek, // Frame seeking state for custom center area
+    }
+
+    private enum class CustomAreaSection {
+        LEFT,    // Frame seeking: vertical gestures
+        CENTER,  // Tap play/pause only
+        RIGHT,   // Frame seeking: vertical gestures
+        NONE     // Outside custom area
     }
 
     private var state = State.Up
@@ -55,7 +62,7 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
     // last non-throttled processed position
     private var lastPos = PointF()
     
-    // NEW: Track frame seeking progress
+    // Track frame seeking progress
     private var frameSeekStartPos = PointF() // Starting position for frame seeking
     private var lastFrameTriggerPos = PointF() // Last position where frame was triggered
 
@@ -64,9 +71,9 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
     // minimum movement which triggers a Control state
     private var trigger = 0f
     
-    // Custom flag: true if the touch started in the custom center area
+    // Custom area tracking
     private var isCustomCenterTouch = false 
-    // NEW: Track pause state for frame seeking
+    private var customAreaSection = CustomAreaSection.NONE
     private var wasVideoPlayingBeforeSeek = false
 
     // which property change should be invoked where
@@ -120,8 +127,29 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
         private const val CUSTOM_CENTER_TOP_PERCENT = 5f
         private const val CUSTOM_CENTER_BOTTOM_PERCENT = 75f // 100% - 25% free bottom = 75%
         
-        // NEW: Frame seeking constants - YOU CAN CHANGE THESE VALUES
-        private const val FRAME_SEEK_PIXEL_TRIGGER = 8f // Reduced from 12px to 8px for faster response
+        // FRAME SEEKING CONSTANTS - YOU CAN CHANGE THESE VALUES
+        private const val FRAME_SEEK_PIXEL_TRIGGER = 12f // Pixels to move vertically before triggering frame step
+        private const val FRAMES_PER_TRIGGER = 1 // How many frames to skip per trigger
+    }
+
+    // NEW: Determine which section of custom area was touched
+    private fun getCustomAreaSection(x: Float, y: Float): CustomAreaSection {
+        val customCenterTopY = height * CUSTOM_CENTER_TOP_PERCENT / 100f
+        val customCenterBottomY = height * CUSTOM_CENTER_BOTTOM_PERCENT / 100f
+        
+        // Check if touch is within custom center area
+        if (y < customCenterTopY || y > customCenterBottomY) {
+            return CustomAreaSection.NONE
+        }
+        
+        // Divide custom area into 3 vertical sections
+        val sectionWidth = width / 3f
+        
+        return when {
+            x < sectionWidth -> CustomAreaSection.LEFT
+            x < sectionWidth * 2 -> CustomAreaSection.CENTER
+            else -> CustomAreaSection.RIGHT
+        }
     }
 
     private fun processTap(p: PointF): Boolean {
@@ -196,20 +224,21 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
         return state != State.Up && state != State.Down
     }
     
-    // NEW: Process frame seeking in custom center area
-    private fun processFrameSeek(p: PointF): Boolean {
-        val dx = p.x - lastFrameTriggerPos.x
-        val absDx = abs(dx)
+    // Process vertical frame seeking in custom left/right areas
+    private fun processVerticalFrameSeek(p: PointF): Boolean {
+        val dy = p.y - lastFrameTriggerPos.y
+        val absDy = abs(dy)
         
-        // Check if we've moved enough pixels to trigger a frame step
-        if (absDx >= FRAME_SEEK_PIXEL_TRIGGER) {
-            val direction = if (dx > 0) 1f else -1f // 1 = forward, -1 = backward
+        // Check if we've moved enough pixels vertically to trigger a frame step
+        if (absDy >= FRAME_SEEK_PIXEL_TRIGGER) {
+            // UP = forward, DOWN = backward (more intuitive: swipe up to go forward in time)
+            val direction = if (dy < 0) 1f else -1f // Negative dy = up = forward
             
-            // Send single frame step command
-            sendPropertyChange(PropertyChange.FrameSeek, direction)
+            // Send frame step command
+            sendPropertyChange(PropertyChange.FrameSeek, direction * FRAMES_PER_TRIGGER)
             
             // Reset trigger position for next boundary
-            lastFrameTriggerPos.set(p.x, lastFrameTriggerPos.y)
+            lastFrameTriggerPos.set(lastFrameTriggerPos.x, p.y)
         }
         
         return true
@@ -256,7 +285,6 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
         val point = PointF(e.x, e.y)
         when (e.action) {
             MotionEvent.ACTION_UP -> {
-                // --- CUSTOM CENTER AREA LOGIC ---
                 if (isCustomCenterTouch) {
                     when (state) {
                         State.ControlFrameSeek -> {
@@ -266,9 +294,11 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
                             }
                         }
                         State.Down -> {
-                            // Tap to Play/Pause (only if no significant movement occurred)
-                            sendPropertyChange(PropertyChange.PlayPause, 0f)
-                            lastTapTime = SystemClock.uptimeMillis() 
+                            // Only process tap if we're in CENTER section
+                            if (customAreaSection == CustomAreaSection.CENTER) {
+                                sendPropertyChange(PropertyChange.PlayPause, 0f)
+                                lastTapTime = SystemClock.uptimeMillis() 
+                            }
                         }
                         else -> {
                             // Handle other states if needed
@@ -276,6 +306,7 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
                     }
                     gestureHandled = true
                     isCustomCenterTouch = false
+                    customAreaSection = CustomAreaSection.NONE
                     state = State.Up
                 } else {
                     // Original Logic for non-custom areas
@@ -285,58 +316,58 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
                         sendPropertyChange(PropertyChange.Finalize, 0f)
                     state = State.Up
                 }
-                // --- END CUSTOM CENTER AREA LOGIC ---
             }
             MotionEvent.ACTION_DOWN -> {
-                val customCenterTopY = height * CUSTOM_CENTER_TOP_PERCENT / 100f
-                val customCenterBottomY = height * CUSTOM_CENTER_BOTTOM_PERCENT / 100f
-
-                // Check for touch in the 5% top or 25% bottom free areas
-                if (e.y < customCenterTopY || e.y > customCenterBottomY) {
+                // Determine which section was touched
+                customAreaSection = getCustomAreaSection(e.x, e.y)
+                
+                if (customAreaSection == CustomAreaSection.NONE) {
                     isCustomCenterTouch = false
-                    // return false to ignore the touch entirely
-                    return false 
+                    return false // Ignore touches outside custom area
                 }
                 
-                // Touch is in the custom center 70% area.
+                // Touch is in custom area
                 isCustomCenterTouch = true
-                
                 initialPos.set(point)
-                frameSeekStartPos.set(point) // NEW: Set starting point for frame seeking
-                lastFrameTriggerPos.set(point) // NEW: Set initial trigger position
+                frameSeekStartPos.set(point)
+                lastFrameTriggerPos.set(point)
                 
-                // Store current play state - we'll check this in MPVActivity
-                wasVideoPlayingBeforeSeek = true // Assume playing, MPVActivity will correct this
-                sendPropertyChange(PropertyChange.Pause, 0f) // Always pause when starting frame seeking
+                // If touch is in LEFT or RIGHT section, prepare for frame seeking
+                if (customAreaSection == CustomAreaSection.LEFT || customAreaSection == CustomAreaSection.RIGHT) {
+                    wasVideoPlayingBeforeSeek = true // Assume playing, MPVActivity will correct this
+                    sendPropertyChange(PropertyChange.Pause, 0f) // Pause when starting frame seeking
+                }
                 
-                // We SKIP processTap(point) here to prevent existing tap logic from running.
                 lastPos.set(point)
                 state = State.Down
-                // always return true on ACTION_DOWN to continue receiving events
                 gestureHandled = true
             }
             MotionEvent.ACTION_MOVE -> {
-                // --- CUSTOM CENTER AREA LOGIC ---
                 if (isCustomCenterTouch) {
                     when (state) {
                         State.Down -> {
-                            val dx = point.x - initialPos.x
-                            // Check if horizontal movement exceeds threshold for frame seeking
-                            if (abs(dx) > trigger) {
-                                state = State.ControlFrameSeek
-                                gestureHandled = processFrameSeek(point)
+                            // Only check for frame seeking gestures in LEFT/RIGHT sections
+                            if (customAreaSection == CustomAreaSection.LEFT || customAreaSection == CustomAreaSection.RIGHT) {
+                                val dy = point.y - initialPos.y
+                                // Check if vertical movement exceeds threshold for frame seeking
+                                if (abs(dy) > trigger) {
+                                    state = State.ControlFrameSeek
+                                    gestureHandled = processVerticalFrameSeek(point)
+                                } else {
+                                    lastPos.set(point)
+                                    gestureHandled = true
+                                }
                             } else {
-                                // Still in down state, just update position
+                                // In CENTER section, just track position but don't start gestures
                                 lastPos.set(point)
                                 gestureHandled = true
                             }
                         }
                         State.ControlFrameSeek -> {
-                            // Continue frame seeking
-                            gestureHandled = processFrameSeek(point)
+                            // Continue frame seeking in LEFT/RIGHT sections
+                            gestureHandled = processVerticalFrameSeek(point)
                         }
                         State.Up, State.ControlSeek, State.ControlVolume, State.ControlBright -> {
-                            // These states shouldn't happen in custom area, but handle gracefully
                             lastPos.set(point)
                             gestureHandled = true
                         }
@@ -345,7 +376,6 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
                     // Original logic for other areas
                     gestureHandled = processMovement(point)
                 }
-                // --- END CUSTOM CENTER AREA LOGIC ---
             }
         }
         return gestureHandled
