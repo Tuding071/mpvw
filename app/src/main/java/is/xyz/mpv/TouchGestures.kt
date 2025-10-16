@@ -57,7 +57,7 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
     
     // NEW: Track frame seeking progress
     private var frameSeekStartPos = PointF() // Starting position for frame seeking
-    private var accumulatedFrames = 0 // Total frames seeked in current gesture
+    private var lastFrameTriggerPos = PointF() // Last position where frame was triggered
 
     private var width = 0f
     private var height = 0f
@@ -122,7 +122,6 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
         
         // NEW: Frame seeking constants - YOU CAN CHANGE THESE VALUES
         private const val FRAME_SEEK_PIXEL_TRIGGER = 12f // Pixels to move before triggering frame step
-        private const val FRAMES_PER_TRIGGER = 1 // How many frames to skip per trigger
     }
 
     private fun processTap(p: PointF): Boolean {
@@ -190,31 +189,27 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
                 sendPropertyChange(PropertyChange.Volume, CONTROL_VOLUME_MAX * dr)
             State.ControlBright ->
                 sendPropertyChange(PropertyChange.Bright, CONTROL_BRIGHT_MAX * dr)
+            State.ControlFrameSeek -> {
+                // Frame seeking handled separately in processFrameSeek
+            }
         }
         return state != State.Up && state != State.Down
     }
     
     // NEW: Process frame seeking in custom center area
     private fun processFrameSeek(p: PointF): Boolean {
-        val dx = p.x - frameSeekStartPos.x
+        val dx = p.x - lastFrameTriggerPos.x
         val absDx = abs(dx)
         
         // Check if we've moved enough pixels to trigger a frame step
         if (absDx >= FRAME_SEEK_PIXEL_TRIGGER) {
             val direction = if (dx > 0) 1f else -1f // 1 = forward, -1 = backward
             
-            // Calculate how many frame triggers we've passed
-            val triggersPassed = (absDx / FRAME_SEEK_PIXEL_TRIGGER).toInt()
-            val framesToSeek = triggersPassed * FRAMES_PER_TRIGGER * direction.toInt()
+            // Send single frame step command
+            sendPropertyChange(PropertyChange.FrameSeek, direction)
             
-            // Only send if we have new frames to seek
-            if (framesToSeek != 0) {
-                accumulatedFrames += framesToSeek
-                sendPropertyChange(PropertyChange.FrameSeek, accumulatedFrames.toFloat())
-                
-                // Reset starting position for next trigger
-                frameSeekStartPos.set(p.x, frameSeekStartPos.y)
-            }
+            // Reset trigger position for next boundary
+            lastFrameTriggerPos.set(p.x, lastFrameTriggerPos.y)
         }
         
         return true
@@ -274,12 +269,12 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
                             sendPropertyChange(PropertyChange.PlayPause, 0f)
                             lastTapTime = SystemClock.uptimeMillis() 
                         }
+                        else -> {
+                            // Handle other states if needed
+                        }
                     }
                     gestureHandled = true
                     isCustomCenterTouch = false
-                    
-                    // Reset frame seeking state
-                    accumulatedFrames = 0
                     state = State.Up
                 } else {
                     // Original Logic for non-custom areas
@@ -307,7 +302,7 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
                 
                 initialPos.set(point)
                 frameSeekStartPos.set(point) // NEW: Set starting point for frame seeking
-                accumulatedFrames = 0 // NEW: Reset frame counter
+                lastFrameTriggerPos.set(point) // NEW: Set initial trigger position
                 wasPausedForFrameSeek = false // NEW: Reset pause state
                 
                 // We SKIP processTap(point) here to prevent existing tap logic from running.
@@ -341,7 +336,8 @@ internal class TouchGestures(private val observer: TouchGesturesObserver) {
                             // Continue frame seeking
                             gestureHandled = processFrameSeek(point)
                         }
-                        else -> {
+                        State.Up, State.ControlSeek, State.ControlVolume, State.ControlBright -> {
+                            // These states shouldn't happen in custom area, but handle gracefully
                             lastPos.set(point)
                             gestureHandled = true
                         }
